@@ -396,18 +396,8 @@ where
         // transaction root and submit it to Sentry
         let span = &span;
         Hub::with_active(move |hub| {
-            let client = match hub.client() {
-                Some(client) => client,
-                None => return,
-            };
-
-            if !client.sample_traces_should_send() {
-                return;
-            }
-
             let transaction = (self.transaction_mapper)(trace.span, span, trace.spans, timings);
-            let envelope = Envelope::from(transaction);
-            client.send_envelope(envelope);
+            hub.capture_transaction(transaction);
         });
     }
 }

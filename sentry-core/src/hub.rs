@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, TryLockError};
 use std::thread;
 use std::time::Duration;
 
-use crate::protocol::{Breadcrumb, Event, Level, SessionStatus};
+use crate::protocol::{Breadcrumb, Event, Level, SessionStatus, Transaction};
 use crate::types::Uuid;
 use crate::{event_from_error, Integration, IntoBreadcrumbs, Scope, ScopeGuard};
 #[cfg(feature = "client")]
@@ -280,6 +280,23 @@ impl Hub {
                 if let Some(ref client) = top.client {
                     let event_id = client.capture_event(event, Some(&top.scope));
                     *self.last_event_id.write().unwrap() = Some(event_id);
+                    event_id
+                } else {
+                    Default::default()
+                }
+            })
+        }}
+    }
+
+    /// Sends the transaction to the current client with the current scope.
+    ///
+    /// In case no client is bound this does nothing instead.
+    pub fn capture_transaction(&self, transaction: Transaction<'static>) -> Uuid {
+        with_client_impl! {{
+            self.inner.with(|stack| {
+                let top = stack.top();
+                if let Some(ref client) = top.client {
+                    let event_id = client.capture_transaction(transaction, Some(&top.scope));
                     event_id
                 } else {
                     Default::default()

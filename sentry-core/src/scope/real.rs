@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use crate::protocol::{Breadcrumb, Context, Event, Level, User, Value};
+use crate::protocol::{Breadcrumb, Context, Event, Level, Transaction, User, Value};
 use crate::session::Session;
 use crate::Client;
 
@@ -274,6 +274,29 @@ impl Scope {
         }
 
         Some(event)
+    }
+
+    /// Applies the contained scoped data to fill a transaction.
+    pub fn apply_to_transaction(
+        &self,
+        mut transaction: Transaction<'static>,
+    ) -> Option<Transaction<'static>> {
+        transaction
+            .tags
+            .extend(self.tags.iter().map(|(k, v)| (k.to_owned(), v.to_owned())));
+        transaction.contexts.extend(
+            self.contexts
+                .iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        );
+
+        if transaction.name.is_none() {
+            if let Some(txn) = self.transaction.as_deref() {
+                transaction.name = Some(txn.to_owned());
+            }
+        }
+
+        Some(transaction)
     }
 
     pub(crate) fn update_session_from_event(&self, event: &Event<'static>) {

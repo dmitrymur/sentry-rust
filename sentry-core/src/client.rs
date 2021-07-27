@@ -10,7 +10,7 @@ use rand::random;
 use sentry_types::protocol::v7::SessionUpdate;
 
 use crate::constants::SDK_INFO;
-use crate::protocol::{ClientSdkInfo, Event};
+use crate::protocol::{ClientSdkInfo, Event, Transaction};
 use crate::session::SessionFlusher;
 use crate::types::{Dsn, Uuid};
 use crate::{ClientOptions, Envelope, Hub, Integration, Scope, SessionMode, Transport};
@@ -220,6 +220,67 @@ impl Client {
         }
     }
 
+    fn prepare_transaction(
+        &self,
+        mut transacation: Transaction<'static>,
+        scope: Option<&Scope>,
+    ) -> Option<Transaction<'static>> {
+        // Transaction has no "level" field
+        // if let Some(scope) = scope {
+        //    scope.update_session_from_transaction(&transacation);
+        //}
+
+        if !self.sample_traces_should_send() {
+            return None;
+        }
+
+        // event_id and sdk_info are set before the processors run so that the
+        // processors can poke around in that data.
+        if transacation.event_id.is_nil() {
+            transacation.event_id = Uuid::new_v4();
+        }
+
+        if transacation.sdk.is_none() {
+            // NOTE: we need to clone here because `Event` must be `'static`
+            transacation.sdk = Some(Cow::Owned(self.sdk_info.clone()));
+        }
+
+        if let Some(scope) = scope {
+            transacation = match scope.apply_to_transaction(transacation) {
+                Some(transacation) => transacation,
+                None => return None,
+            };
+        }
+
+        for (_, integration) in self.integrations.iter() {
+            //let id = transacation.event_id;
+            //transacation = match integration.process_transaction(transacation, &self.options) {
+            //    Some(event) => event,
+            //    None => {
+            //        sentry_debug!("integration dropped transaction {:?}", id);
+            //        return None;
+            //    }
+            //}
+        }
+
+        if &transacation.platform == "other" {
+            transacation.platform = "native".into();
+        }
+
+        if let Some(ref func) = self.options.before_send {
+            // Before send callback suppports only events
+            // sentry_debug!("invoking before_send callback");
+            // let id = transacation.event_id;
+            // func(transacation).or_else(move || {
+            //    sentry_debug!("before_send dropped transaction {:?}", id);
+            //    None
+            // })
+            Some(transacation)
+        } else {
+            Some(transacation)
+        }
+    }
+
     /// Returns the options of this client.
     pub fn options(&self) -> &ClientOptions {
         &self.options
@@ -263,6 +324,38 @@ impl Client {
             if let Some(event) = self.prepare_event(event, scope) {
                 let event_id = event.event_id;
                 let mut envelope: Envelope = event.into();
+                // For request-mode sessions, we aggregate them all instead of
+                // flushing them out early.
+                if self.options.session_mode == SessionMode::Application {
+                    let session_item = scope.and_then(|scope| {
+                        scope
+                            .session
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .and_then(|session| session.create_envelope_item())
+                    });
+                    if let Some(session_item) = session_item {
+                        envelope.add_item(session_item);
+                    }
+                }
+                transport.send_envelope(envelope);
+                return event_id;
+            }
+        }
+        Default::default()
+    }
+
+    /// Captures a transaction and sends it to sentry.
+    pub fn capture_transaction(
+        &self,
+        transaction: Transaction<'static>,
+        scope: Option<&Scope>,
+    ) -> Uuid {
+        if let Some(ref transport) = *self.transport.read().unwrap() {
+            if let Some(transaction) = self.prepare_transaction(transaction, scope) {
+                let event_id = transaction.event_id;
+                let mut envelope: Envelope = transaction.into();
                 // For request-mode sessions, we aggregate them all instead of
                 // flushing them out early.
                 if self.options.session_mode == SessionMode::Application {
